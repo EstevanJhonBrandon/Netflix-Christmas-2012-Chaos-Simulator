@@ -1,0 +1,739 @@
+# ══════════════════════════════════════════════════════════════════
+#  Netflix Christmas 2012 — Chaos Simulator
+#  docker compose up -d
+#
+#  Fixes en esta versión:
+#   1. Grafana: sin GF_INSTALL_PLUGINS → sin DNS externo al iniciar
+#   2. Cassandra: BROADCAST_ADDRESS explícito por nodo (IPs de
+#      cassandra_link) + seeds con IPs → gossip cross-DC funciona
+#   3. Zookeeper: healthcheck sin 'nc' (no viene en la imagen)
+#   4. Frontend: nginx resuelve upstreams con Docker DNS dinámico
+# ══════════════════════════════════════════════════════════════════
+
+x-logging: &logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Anchor SOLO con los parámetros COMUNES a todos los nodos
+x-cassandra-base: &cassandra-base
+  image: cassandra:4.1
+  environment:
+    CASSANDRA_CLUSTER_NAME: netflix_sim
+    CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    # IPs de cassandra_link — hostnames NO funcionan para seeds
+    # porque Docker resuelve al IP de la red primaria del nodo
+    # (dc_east_1 / dc_east_2), que no es alcanzable desde el otro DC.
+    CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+    # Escuchar en todas las interfaces
+    CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+    CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+    MAX_HEAP_SIZE: "512M"
+    HEAP_NEWSIZE: "128M"
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.1
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__WEBSERVER__SECRET_KEY: netflix-sim-webserver-secret
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: 120
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
+  volumes:
+    - airflow_data:/opt/airflow
+    - ./backend/airflow/dags:/opt/airflow/dags:ro
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+  logging: *logging
+
+networks:
+  app_net:
+    driver: bridge
+
+  dc_east_1:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+  dc_east_2:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+
+  # Red compartida para gossip Cassandra entre DCs.
+  # Cada nodo tiene una IP fija aquí y usa CASSANDRA_BROADCAST_ADDRESS
+  # apuntando a esta IP → gossip siempre usa IPs alcanzables.
+  cassandra_link:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+
+volumes:
+  cassandra_e1_n1: {}
+  cassandra_e1_n2: {}
+  cassandra_e1_n3: {}
+  cassandra_e2_n1: {}
+  cassandra_e2_n2: {}
+  cassandra_e2_n3: {}
+  kafka_data: {}
+  zookeeper_data: {}
+  vault_data: {}
+  consul_data: {}
+  prometheus_data: {}
+  grafana_data: {}
+  airflow_data: {}
+  airflow_db_data: {}
+
+services:
+
+  # ─────────────────────────────────────────────────────────────
+  # CASSANDRA — DC-EAST-1
+  #
+  # BROADCAST_ADDRESS = IP del nodo en cassandra_link
+  # Cassandra anuncia esta IP a los demás nodos durante el gossip.
+  # Sin esto anuncia la IP de dc_east_1 (172.20.x.x), que los
+  # nodos de dc_east_2 no pueden alcanzar → connection timeout.
+  # ─────────────────────────────────────────────────────────────
+  cass-e1-n1:
+    <<: *cassandra-base
+    container_name: cass-e1-n1
+    hostname: cass-e1-n1
+    networks:
+      dc_east_1:
+        ipv4_address: 172.20.0.10
+      cassandra_link:
+        ipv4_address: 172.22.0.10
+    environment:
+      CASSANDRA_CLUSTER_NAME: netflix_sim
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_ADDRESS: "172.22.0.10"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.10"
+      CASSANDRA_DC: dc-east-1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    volumes:
+      - cassandra_e1_n1:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 90s
+    logging: *logging
+
+  cass-e1-n2:
+    <<: *cassandra-base
+    container_name: cass-e1-n2
+    hostname: cass-e1-n2
+    networks:
+      dc_east_1:
+        ipv4_address: 172.20.0.11
+      cassandra_link:
+        ipv4_address: 172.22.0.11
+    environment:
+      CASSANDRA_CLUSTER_NAME: netflix_sim
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_ADDRESS: "172.22.0.11"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.11"
+      CASSANDRA_DC: dc-east-1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    volumes:
+      - cassandra_e1_n2:/var/lib/cassandra
+    depends_on:
+      cass-e1-n1:
+        condition: service_healthy
+    logging: *logging
+
+  cass-e1-n3:
+    <<: *cassandra-base
+    container_name: cass-e1-n3
+    hostname: cass-e1-n3
+    networks:
+      dc_east_1:
+        ipv4_address: 172.20.0.12
+      cassandra_link:
+        ipv4_address: 172.22.0.12
+    environment:
+      CASSANDRA_CLUSTER_NAME: netflix_sim
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_ADDRESS: "172.22.0.12"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.12"
+      CASSANDRA_DC: dc-east-1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    volumes:
+      - cassandra_e1_n3:/var/lib/cassandra
+    depends_on:
+      cass-e1-n1:
+        condition: service_healthy
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # CASSANDRA — DC-EAST-2
+  # ─────────────────────────────────────────────────────────────
+  cass-e2-n1:
+    <<: *cassandra-base
+    container_name: cass-e2-n1
+    hostname: cass-e2-n1
+    networks:
+      dc_east_2:
+        ipv4_address: 172.21.0.10
+      cassandra_link:
+        ipv4_address: 172.22.0.20
+    environment:
+      CASSANDRA_CLUSTER_NAME: netflix_sim
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_ADDRESS: "172.22.0.20"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.20"
+      CASSANDRA_DC: dc-east-2
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    volumes:
+      - cassandra_e2_n1:/var/lib/cassandra
+    depends_on:
+      cass-e1-n1:
+        condition: service_healthy
+    logging: *logging
+
+  cass-e2-n2:
+    <<: *cassandra-base
+    container_name: cass-e2-n2
+    hostname: cass-e2-n2
+    networks:
+      dc_east_2:
+        ipv4_address: 172.21.0.11
+      cassandra_link:
+        ipv4_address: 172.22.0.21
+    environment:
+      CASSANDRA_CLUSTER_NAME: netflix_sim
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_ADDRESS: "172.22.0.21"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.21"
+      CASSANDRA_DC: dc-east-2
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    volumes:
+      - cassandra_e2_n2:/var/lib/cassandra
+    depends_on:
+      cass-e2-n1:
+        condition: service_healthy
+    logging: *logging
+
+  cass-e2-n3:
+    <<: *cassandra-base
+    container_name: cass-e2-n3
+    hostname: cass-e2-n3
+    networks:
+      dc_east_2:
+        ipv4_address: 172.21.0.12
+      cassandra_link:
+        ipv4_address: 172.22.0.22
+    environment:
+      CASSANDRA_CLUSTER_NAME: netflix_sim
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
+      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_ADDRESS: "172.22.0.22"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.22"
+      CASSANDRA_DC: dc-east-2
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    volumes:
+      - cassandra_e2_n3:/var/lib/cassandra
+    depends_on:
+      cass-e2-n1:
+        condition: service_healthy
+    logging: *logging
+
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: cassandra-init
+    networks: [dc_east_1, cassandra_link]
+    depends_on:
+      cass-e1-n1:
+        condition: service_healthy
+    volumes:
+      - ./backend/cassandra/init.cql:/init.cql:ro
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        echo '[INIT] Waiting 20s for ring to stabilize...'
+        sleep 20
+        until cqlsh cass-e1-n1 -e 'describe cluster' > /dev/null 2>&1; do
+          echo '[INIT] Retrying in 5s...'
+          sleep 5
+        done
+        echo '[INIT] Applying schema...'
+        cqlsh cass-e1-n1 -f /init.cql
+        echo '[INIT] Schema applied OK'
+    restart: on-failure
+
+  # ─────────────────────────────────────────────────────────────
+  # ZOOKEEPER
+  #
+  # FIX: El healthcheck usaba 'nc' que NO viene instalado en la
+  # imagen confluentinc/cp-zookeeper:7.5.0 (Debian-based pero
+  # sin netcat-openbsd). Se reemplaza por bash /dev/tcp que sí
+  # está disponible en bash 4+ (incluido en la imagen).
+  # ─────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    networks: [app_net]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    healthcheck:
+      # bash -c 'echo > /dev/tcp/host/port' abre TCP sin nc.
+      # Retorna 0 si el puerto acepta conexiones, 1 si no.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/2181' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # KAFKA
+  # ─────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    hostname: kafka
+    networks: [app_net]
+    ports:
+      - "9092:9092"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list > /dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+    logging: *logging
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    networks: [app_net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        echo '[INIT] Creating Kafka topics...'
+        for topic in subscriptions payments streams chaos-events dead-letter; do
+          kafka-topics \
+            --create \
+            --if-not-exists \
+            --bootstrap-server kafka:29092 \
+            --topic $topic \
+            --partitions ${KAFKA_NUM_PARTITIONS:-6} \
+            --replication-factor ${KAFKA_REPLICATION_FACTOR:-1}
+          echo "[INIT] Topic '$topic' ready"
+        done
+        echo '[INIT] All Kafka topics created'
+    restart: on-failure
+
+  # ─────────────────────────────────────────────────────────────
+  # VAULT
+  # ─────────────────────────────────────────────────────────────
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: vault
+    hostname: vault
+    networks: [app_net]
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_ADDR: "http://0.0.0.0:8200"
+    cap_add: [IPC_LOCK]
+    volumes:
+      - vault_data:/vault/data
+      - ./backend/scripts/vault-init.sh:/vault-init.sh:ro
+    command: server -dev
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -address=http://localhost:8200 > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # CONSUL
+  # ─────────────────────────────────────────────────────────────
+  consul:
+    image: hashicorp/consul:1.17
+    container_name: consul
+    hostname: consul
+    networks: [app_net]
+    ports:
+      - "8500:8500"
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -bind=0.0.0.0
+    volumes:
+      - consul_data:/consul/data
+      - ./backend/consul/config.json:/consul/config/config.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "consul members > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # FASTAPI
+  # ─────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend/services/api
+      dockerfile: Dockerfile
+    container_name: netflix-api
+    hostname: api
+    networks: [app_net, dc_east_1, dc_east_2, cassandra_link]
+    ports:
+      - "8000:8000"
+    environment:
+      CASSANDRA_HOSTS: "172.22.0.10,172.22.0.11,172.22.0.12,172.22.0.20,172.22.0.21,172.22.0.22"
+      CASSANDRA_DC_PRIMARY: ${CASSANDRA_DC_PRIMARY}
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL}
+      VAULT_ADDR: ${VAULT_ADDR}
+      VAULT_TOKEN: ${VAULT_TOKEN}
+      CONSUL_HOST: consul
+      JAEGER_HOST: jaeger
+      CONSISTENCY_LEVEL: ${CASSANDRA_CONSISTENCY_LEVEL}
+      ENVIRONMENT: ${ENVIRONMENT}
+      STARTUP_TIMEOUT_SECONDS: ${STARTUP_TIMEOUT_SECONDS}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health > /dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - ./backend/services/api:/app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.api.entrypoints=web"
+      - "traefik.http.middlewares.cb.circuitbreaker.expression=NetworkErrorRatio() > 0.30"
+      - "traefik.http.middlewares.retry.retry.attempts=3"
+      - "traefik.http.middlewares.retry.retry.initialinterval=500ms"
+      - "traefik.http.routers.api.middlewares=cb,retry"
+    logging: *logging
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  # NODE.JS STREAMING
+  # ─────────────────────────────────────────────────────────────
+  streaming:
+    build:
+      context: ./backend/services/streaming
+      dockerfile: Dockerfile
+    container_name: netflix-streaming
+    hostname: streaming
+    networks: [app_net]
+    ports:
+      - "3000:3000"
+    environment:
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL}
+      LATENCY_INJECTION_MS: ${LATENCY_INJECTION_MS}
+      PORT: ${STREAMING_PORT}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health > /dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *logging
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  # CHAOS ENGINE
+  # ─────────────────────────────────────────────────────────────
+  chaos:
+    build:
+      context: ./backend/services/chaos
+      dockerfile: Dockerfile
+    container_name: chaos-engine
+    hostname: chaos
+    networks: [app_net, dc_east_1, dc_east_2, cassandra_link]
+    ports:
+      - "8001:8001"
+    environment:
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP_INTERNAL}
+      API_URL: http://api:8000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backend/services/chaos:/app
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/status > /dev/null || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *logging
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  # TRAEFIK — Docker API v1.40 fix
+  # ─────────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v2.11
+    container_name: traefik
+    networks: [app_net]
+    ports:
+      - "80:80"
+      - "8080:8080"
+    environment:
+      DOCKER_API_VERSION: "1.40"
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--entrypoints.web.address=:80"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
+      - "--accesslog=true"
+      - "--log.level=INFO"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # JAEGER
+  # ─────────────────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: jaeger
+    networks: [app_net]
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # PROMETHEUS
+  # ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    networks: [app_net]
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./backend/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # GRAFANA
+  #
+  # FIX: Se elimina GF_INSTALL_PLUGINS.
+  # Al arrancar, Grafana intentaba descargar el plugin desde
+  # grafana.com, pero el DNS interno de Docker (127.0.0.11) no
+  # puede resolver nombres externos en entornos con acceso a
+  # internet restringido → crash inmediato con exit code 1.
+  # El clock-panel no es crítico para este proyecto.
+  # ─────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    networks: [app_net]
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Sin GF_INSTALL_PLUGINS → sin descarga en internet al arrancar
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./backend/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./backend/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on: [prometheus]
+    logging: *logging
+
+  # ─────────────────────────────────────────────────────────────
+  # POSTGRESQL — backend de metadata para Airflow
+  # ─────────────────────────────────────────────────────────────
+  airflow-db:
+    image: postgres:15-alpine
+    container_name: airflow-db
+    networks: [app_net]
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *logging
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  # AIRFLOW
+  # ─────────────────────────────────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    networks: [app_net]
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        echo '[AIRFLOW-INIT] Initializing database...'
+        airflow db init
+        echo '[AIRFLOW-INIT] Creating admin user...'
+        airflow users create \
+          --username ${AIRFLOW_ADMIN_USER} \
+          --password ${AIRFLOW_ADMIN_PASSWORD} \
+          --firstname Chaos \
+          --lastname Engineer \
+          --role Admin \
+          --email chaos@netflix-sim.local || true
+        echo '[AIRFLOW-INIT] Done'
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    networks: [app_net]
+    ports:
+      - "8088:8080"
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health > /dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    networks: [app_net]
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  # FRONTEND
+  # ─────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+        VITE_CHAOS_URL: ""
+        VITE_SSE_URL: ""
+    container_name: netflix-frontend
+    hostname: frontend
+    networks: [app_net]
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80 > /dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+    restart: unless-stopped
