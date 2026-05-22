@@ -77,6 +77,19 @@ reset:
 	@echo "$(YELLOW)⚠️  Removing ALL containers and volumes...$(RESET)"
 	docker compose down -v --remove-orphans
 
+# purge-state: elimina solo los volúmenes de datos persistentes
+# (Prometheus WAL, Cassandra SSTables, Grafana state, Consul data)
+# sin borrar imágenes descargadas. Úsalo cuando:
+#   - Prometheus muestre "Unknown series references" al arrancar
+#   - Cassandra tarde más de lo normal en unirse al ring
+#   - Grafana no cargue dashboards correctamente
+purge-state:
+	@echo "$(YELLOW)🗑  Purgando volúmenes de estado (WAL, SSTables, Consul)...$(RESET)"
+	docker compose down --remove-orphans
+	docker volume rm -f 		$$(docker volume ls -q | grep -E "cassandra_e[12]_n[123]|prometheus_data|grafana_data|consul_data") 		2>/dev/null || true
+	@echo "$(GREEN)✓ Estado purgado. El próximo 'make up' arranca desde cero.$(RESET)"
+	@echo "$(YELLOW)  Nota: Cassandra tardará ~3 min en reconstruir el ring completo.$(RESET)"
+
 restart:
 	docker compose restart $(svc)
 
@@ -135,6 +148,18 @@ cassandra-repair:
 
 cassandra-shell:
 	docker exec -it cass-e1-n1 cqlsh
+
+cassandra-migrate:
+	@echo "$(YELLOW)🔧 Applying Cassandra migrations...$(RESET)"
+	@for f in backend/cassandra/v0*.cql; do \
+	  echo "  Applying $$f..."; \
+	  docker exec cass-e1-n1 cqlsh -f /dev/stdin < $$f && echo "  OK: $$f" || echo "  SKIP (may already be applied): $$f"; \
+	done
+
+cassandra-seed-video:
+	@echo "$(YELLOW)🎬 Seeding video URLs into projections...$(RESET)"
+	docker exec -i cass-e1-n1 cqlsh < backend/cassandra/v009_projection_video_columns.cql
+	@echo "$(GREEN)✓ Video URLs seeded$(RESET)"
 
 # ── Consistency ────────────────────────────────────────────────────
 consistency-quorum:

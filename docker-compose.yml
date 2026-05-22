@@ -27,10 +27,17 @@ x-cassandra-base: &cassandra-base
     # (dc_east_1 / dc_east_2), que no es alcanzable desde el otro DC.
     CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
     # Escuchar en todas las interfaces
-    CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+    # CASSANDRA_LISTEN_ADDRESS se define en cada nodo con su IP estática de cassandra_link.
+    # 0.0.0.0 está prohibido por Cassandra: lo usa para Gossip y necesita una IP única y enrutable.
     CASSANDRA_RPC_ADDRESS: "0.0.0.0"
-    MAX_HEAP_SIZE: "512M"
-    HEAP_NEWSIZE: "128M"
+    MAX_HEAP_SIZE: "256M"
+    HEAP_NEWSIZE: "64M"
+    # Reemplazar CMS GC (deprecated en JDK 9, eliminado en JDK 14) por G1GC.
+    # Cassandra 4.x recomienda G1GC para JDK 11+ con heaps ≤ 8 GB.
+    # -XX:-UseConcMarkSweepGC desactiva CMS explícitamente para silenciar
+    # el warning de deprecación. -XX:+UseG1GC activa el reemplazo.
+    # -XX:+PrintGCDetails se desactiva para reducir ruido en logs.
+    JVM_EXTRA_OPTS: "-XX:-UseConcMarkSweepGC -XX:+UseG1GC -XX:G1HeapRegionSize=4m -XX:-PrintGCDetails"
 
 x-airflow-common: &airflow-common
   image: apache/airflow:2.9.1
@@ -114,14 +121,14 @@ services:
       CASSANDRA_CLUSTER_NAME: netflix_sim
       CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
-      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_LISTEN_ADDRESS: "172.22.0.10"
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_ADDRESS: "172.22.0.10"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.10"
       CASSANDRA_DC: dc-east-1
       CASSANDRA_RACK: rack1
-      MAX_HEAP_SIZE: "512M"
-      HEAP_NEWSIZE: "128M"
+      MAX_HEAP_SIZE: "256M"
+      HEAP_NEWSIZE: "64M"
     volumes:
       - cassandra_e1_n1:/var/lib/cassandra
     healthcheck:
@@ -129,7 +136,7 @@ services:
       interval: 30s
       timeout: 15s
       retries: 10
-      start_period: 90s
+      start_period: 180s
     logging: *logging
 
   cass-e1-n2:
@@ -145,16 +152,22 @@ services:
       CASSANDRA_CLUSTER_NAME: netflix_sim
       CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
-      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_LISTEN_ADDRESS: "172.22.0.11"
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_ADDRESS: "172.22.0.11"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.11"
       CASSANDRA_DC: dc-east-1
       CASSANDRA_RACK: rack1
-      MAX_HEAP_SIZE: "512M"
-      HEAP_NEWSIZE: "128M"
+      MAX_HEAP_SIZE: "256M"
+      HEAP_NEWSIZE: "64M"
     volumes:
       - cassandra_e1_n2:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 180s
     depends_on:
       cass-e1-n1:
         condition: service_healthy
@@ -173,16 +186,22 @@ services:
       CASSANDRA_CLUSTER_NAME: netflix_sim
       CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
-      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_LISTEN_ADDRESS: "172.22.0.12"
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_ADDRESS: "172.22.0.12"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.12"
       CASSANDRA_DC: dc-east-1
       CASSANDRA_RACK: rack1
-      MAX_HEAP_SIZE: "512M"
-      HEAP_NEWSIZE: "128M"
+      MAX_HEAP_SIZE: "256M"
+      HEAP_NEWSIZE: "64M"
     volumes:
       - cassandra_e1_n3:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 180s
     depends_on:
       cass-e1-n1:
         condition: service_healthy
@@ -204,16 +223,22 @@ services:
       CASSANDRA_CLUSTER_NAME: netflix_sim
       CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
-      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_LISTEN_ADDRESS: "172.22.0.20"
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_ADDRESS: "172.22.0.20"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.20"
       CASSANDRA_DC: dc-east-2
       CASSANDRA_RACK: rack1
-      MAX_HEAP_SIZE: "512M"
-      HEAP_NEWSIZE: "128M"
+      MAX_HEAP_SIZE: "256M"
+      HEAP_NEWSIZE: "64M"
     volumes:
       - cassandra_e2_n1:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 180s
     depends_on:
       cass-e1-n1:
         condition: service_healthy
@@ -232,16 +257,22 @@ services:
       CASSANDRA_CLUSTER_NAME: netflix_sim
       CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
-      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_LISTEN_ADDRESS: "172.22.0.21"
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_ADDRESS: "172.22.0.21"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.21"
       CASSANDRA_DC: dc-east-2
       CASSANDRA_RACK: rack1
-      MAX_HEAP_SIZE: "512M"
-      HEAP_NEWSIZE: "128M"
+      MAX_HEAP_SIZE: "256M"
+      HEAP_NEWSIZE: "64M"
     volumes:
       - cassandra_e2_n2:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 180s
     depends_on:
       cass-e2-n1:
         condition: service_healthy
@@ -260,16 +291,22 @@ services:
       CASSANDRA_CLUSTER_NAME: netflix_sim
       CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
       CASSANDRA_SEEDS: "172.22.0.10,172.22.0.20"
-      CASSANDRA_LISTEN_ADDRESS: "0.0.0.0"
+      CASSANDRA_LISTEN_ADDRESS: "172.22.0.22"
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_ADDRESS: "172.22.0.22"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "172.22.0.22"
       CASSANDRA_DC: dc-east-2
       CASSANDRA_RACK: rack1
-      MAX_HEAP_SIZE: "512M"
-      HEAP_NEWSIZE: "128M"
+      MAX_HEAP_SIZE: "256M"
+      HEAP_NEWSIZE: "64M"
     volumes:
       - cassandra_e2_n3:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 180s
     depends_on:
       cass-e2-n1:
         condition: service_healthy
@@ -278,24 +315,57 @@ services:
   cassandra-init:
     image: cassandra:4.1
     container_name: cassandra-init
-    networks: [dc_east_1, cassandra_link]
+    # Necesita acceso a AMBAS redes para poder conectarse a cualquier nodo
+    networks: [dc_east_1, dc_east_2, cassandra_link]
     depends_on:
+      # Todos los nodos deben estar healthy antes de crear el schema.
+      # NetworkTopologyStrategy dc-east-2:3 falla si no hay nodos de ese DC.
       cass-e1-n1:
+        condition: service_healthy
+      cass-e1-n2:
+        condition: service_healthy
+      cass-e1-n3:
+        condition: service_healthy
+      cass-e2-n1:
+        condition: service_healthy
+      cass-e2-n2:
+        condition: service_healthy
+      cass-e2-n3:
         condition: service_healthy
     volumes:
       - ./backend/cassandra/init.cql:/init.cql:ro
+      - ./backend/cassandra/v009_projection_video_columns.cql:/v009.cql:ro
     entrypoint: ["bash", "-c"]
     command:
       - |
-        echo '[INIT] Waiting 20s for ring to stabilize...'
-        sleep 20
-        until cqlsh cass-e1-n1 -e 'describe cluster' > /dev/null 2>&1; do
-          echo '[INIT] Retrying in 5s...'
-          sleep 5
+        set -e
+        echo '[INIT] Todos los nodos healthy — verificando ring completo...'
+
+        # Esperar a que nodetool vea los 6 nodos UP en el ring.
+        # Cassandra reporta UN como "healthy" cuando su propio proceso arranca,
+        # pero el gossip puede tardar 30-60s más en propagar a todos los DCs.
+        # NOTA: $$ en vez de $ para que docker-compose no interpole estas variables
+        # de bash como variables de entorno del compose file.
+        EXPECTED_UP=6
+        for i in $$(seq 1 40); do
+          UP=$$(nodetool -h 172.22.0.10 status 2>/dev/null | grep -c "^UN" || echo 0)
+          echo "[INIT] Ring: $$UP/$$EXPECTED_UP nodos UP (intento $$i/40)"
+          if [ "$$UP" -ge "$$EXPECTED_UP" ]; then
+            echo "[INIT] Ring completo — procediendo con schema"
+            break
+          fi
+          sleep 10
         done
-        echo '[INIT] Applying schema...'
-        cqlsh cass-e1-n1 -f /init.cql
-        echo '[INIT] Schema applied OK'
+
+        if [ "$$UP" -lt "$$EXPECTED_UP" ]; then
+          echo "[INIT] WARN: solo $$UP nodos UP, aplicando schema igualmente (degraded)"
+        fi
+
+        echo '[INIT] Aplicando schema base...'
+        cqlsh 172.22.0.10 -f /init.cql
+        echo '[INIT] Aplicando migración v009 (columnas de video)...'
+        cqlsh 172.22.0.10 -f /v009.cql
+        echo '[INIT] Schema completo OK — keyspace netflix_sim listo'
     restart: on-failure
 
   # ─────────────────────────────────────────────────────────────
@@ -381,10 +451,10 @@ services:
             --create \
             --if-not-exists \
             --bootstrap-server kafka:29092 \
-            --topic $topic \
-            --partitions ${KAFKA_NUM_PARTITIONS:-6} \
-            --replication-factor ${KAFKA_REPLICATION_FACTOR:-1}
-          echo "[INIT] Topic '$topic' ready"
+            --topic $$topic \
+            --partitions 6 \
+            --replication-factor 1
+          echo "[INIT] Topic '$$topic' ready"
         done
         echo '[INIT] All Kafka topics created'
     restart: on-failure
@@ -426,7 +496,19 @@ services:
     networks: [app_net]
     ports:
       - "8500:8500"
-    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -bind=0.0.0.0
+    command:
+      - "agent"
+      - "-server"
+      - "-bootstrap"
+      - "-ui"
+      - "-client=0.0.0.0"
+      # Lista YAML → Docker exec() sin shell → cada elemento es un argv.
+      # El go-sockaddr template NO pasa por bash, lo evalúa Consul directamente.
+      - "-bind={{ GetInterfaceIP \"eth0\" }}"
+      - "-advertise={{ GetInterfaceIP \"eth0\" }}"
+      - "-node=consul-dev"
+      - "-datacenter=dc-east-1"
+      - "-log-level=WARN"
     volumes:
       - consul_data:/consul/data
       - ./backend/consul/config.json:/consul/config/config.json:ro
@@ -468,6 +550,14 @@ services:
         condition: service_healthy
       consul:
         condition: service_healthy
+      # cassandra-init garantiza que el schema existe antes de que el API
+      # intente preparar los statements CQL. Sin esto _prepare_all() falla
+      # en silencio y _stmts queda vacío → todos los endpoints devuelven 500.
+      cassandra-init:
+        condition: service_completed_successfully
+      # kafka-init garantiza que los topics existen antes de publicar eventos.
+      kafka-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health > /dev/null || exit 1"]
       interval: 15s
@@ -506,6 +596,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health > /dev/null 2>&1 || exit 1"]
       interval: 15s
@@ -562,11 +654,20 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.allowEmptyServices=true"
       - "--entrypoints.web.address=:80"
+      # Normalización de URLs según RFC 3986.
+      # Sin esto Traefik advierte sobre rutas con caracteres codificados
+      # (%2F, %20, etc.) que el backend podría no decodificar igual.
+      # "off" delega la decodificación al backend, evitando el warning.
+      - "--entrypoints.web.http2.maxConcurrentStreams=250"
+      - "--providers.docker.defaultRule=PathPrefix(`/`)"
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
       - "--accesslog=true"
-      - "--log.level=INFO"
+      # WARN en lugar de INFO: reduce ruido en logs durante el arranque
+      # (Traefik loguea cada container que examina en nivel INFO).
+      - "--log.level=WARN"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     logging: *logging
@@ -579,11 +680,42 @@ services:
     container_name: jaeger
     networks: [app_net]
     ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
+      - "16686:16686"   # UI + Query HTTP
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+      - "14250:14250"   # Jaeger gRPC nativo
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+      # SPAN_STORAGE_TYPE=memory evita que Jaeger intente conectar a
+      # un backend externo (Elasticsearch/Cassandra) que no existe.
+      SPAN_STORAGE_TYPE: "memory"
+      # Límite de trazas en memoria — suficiente para el simulador.
+      MEMORY_MAX_TRACES: "50000"
+    command:
+      # ── Listeners externos (bind en todas las interfaces) ──────────────
+      # La advertencia de seguridad sobre 0.0.0.0 es esperada en desarrollo:
+      # estos puertos están solo en la red Docker interna (app_net).
+      - "--collector.otlp.grpc.host-port=0.0.0.0:4317"
+      - "--collector.otlp.http.host-port=0.0.0.0:4318"
+      - "--collector.grpc-server.host-port=0.0.0.0:14250"
+      - "--query.grpc-server.host-port=0.0.0.0:16685"
+      - "--query.http-server.host-port=0.0.0.0:16686"
+      - "--admin.http.host-port=0.0.0.0:14269"
+      # ── Conexión interna Query → Collector (IPv4 explícito) ────────────
+      # Este es el fix real del "dial tcp [::1]:4317 connection refused":
+      # Go en Linux resuelve "localhost" como [::1] si /etc/hosts contiene
+      # "::1 localhost" (default en Debian/Ubuntu). Al poner 127.0.0.1
+      # explícito, la goroutine del Query service conecta al Collector
+      # por IPv4 sin importar la configuración de /etc/hosts del contenedor.
+      - "--reporter.grpc.host-port=127.0.0.1:14250"
+    healthcheck:
+      # Puerto 14269 = admin HTTP de Jaeger, el primero en levantar.
+      # Más fiable que intentar el gRPC que depende del Collector.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:14269/ > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     logging: *logging
 
   # ─────────────────────────────────────────────────────────────
@@ -599,7 +731,18 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
+      # WAL compression reduce el tamaño del log y el número de series
+      # huérfanas que generan el warning "Unknown series references" al
+      # restaurar tras un reinicio.
+      - "--storage.tsdb.wal-compression"
+      # Limitar el tamaño del WAL a 256 MB evita que crezca indefinidamente
+      # entre reinicios de contenedor en entornos de desarrollo.
+      - "--storage.tsdb.wal-segment-size=64MB"
       - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"
+      # Alinear lookback-delta con el scrape_interval del prometheus.yml (15s).
+      # Sin esto Prometheus puede perder el último punto antes de un gap.
+      - "--query.lookback-delta=30s"
     volumes:
       - ./backend/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -735,5 +878,29 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging: *logging
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────
+  # K6 — Generador de carga realista
+  #
+  # Simula el tráfico de la víspera de Navidad 2012:
+  #  - Rampa de 5 → 50 VUs concurrentes
+  #  - Mix: 40% browse, 35% play, 5% subs, 10% health, 10% combo
+  #  - Sin este servicio Prometheus no tiene datos y Grafana
+  #    muestra todo en 0/NaN — el simulador parece maqueta.
+  # ─────────────────────────────────────────────────────────────
+  k6:
+    image: grafana/k6:0.51.0
+    container_name: k6-load-generator
+    networks: [app_net]
+    volumes:
+      - ./backend/scripts/k6:/scripts:ro
+    environment:
+      API_BASE: http://api:8000
+    command: run --out experimental-prometheus-rw=http://prometheus:9090/api/v1/write --vus 20 --duration 9999m /scripts/load.js
+    depends_on:
+      api:
+        condition: service_healthy
     logging: *logging
     restart: unless-stopped
